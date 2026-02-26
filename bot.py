@@ -1,3 +1,4 @@
+import os
 import discord
 from discord.ext import commands
 from discord import app_commands
@@ -6,15 +7,24 @@ import time
 from datetime import datetime, timedelta, timezone
 
 # =====================
-import os
+# TOKEN
+# =====================
+# ✅ Bezpečně: token se bere z Environment Variables (Render / PC)
+TOKEN = os.getenv("TOKEN", "").strip()
 
-TOKEN = os.getenv("TOKEN")
+# (volitelné pro PC test – když nechceš env, můžeš sem dočasně dát token,
+# ale NIKDY to nedávej na GitHub)
+TOKEN_FALLBACK = ""  # sem můžeš dočasně vložit token jen lokálně
+if not TOKEN:
+    TOKEN = TOKEN_FALLBACK.strip()
+
+if not TOKEN:
+    raise RuntimeError("TOKEN není nastavený. Nastav env proměnnou TOKEN (nebo TOKEN_FALLBACK lokálně).")
 
 # =====================
 # NASTAVENÍ
 # =====================
 ALLOWED_ROLES = {"VELITEL ADMINU", "MAJITEL"}
-
 AUTO_ROLE_NAME = "LEVEL-1"
 
 LOG_CHANNEL_NAMES = ["role log", "role-log"]
@@ -30,7 +40,7 @@ LAST_WARN: dict[tuple[int, int], float] = {}
 # =====================
 intents = discord.Intents.default()
 intents.members = True
-intents.message_content = True  # nutné pro tempmute mazání zpráv
+intents.message_content = True  # nutné pro tempmute (mazání zpráv)
 
 bot = commands.Bot(command_prefix="!", intents=intents)
 
@@ -53,7 +63,6 @@ async def send_to_logs(guild: discord.Guild, text: str):
     log_ch = find_text_channel(guild, LOG_CHANNEL_NAMES)
     hist_ch = find_text_channel(guild, HISTORY_CHANNEL_NAMES)
 
-    # když kanál neexistuje, nic se nestane (ale bot nespadne)
     if log_ch:
         await log_ch.send(text)
     if hist_ch:
@@ -86,28 +95,31 @@ def format_time_left(seconds: int) -> str:
     return " ".join(parts)
 
 def abuse_block(interaction: discord.Interaction, actor: discord.Member, target: discord.Member) -> str | None:
-    # ochrany proti abuse
     if interaction.guild is None:
         return "Tohle funguje jen na serveru."
+
     if target.id == actor.id:
         return "Nemůžeš to použít sám na sebe."
     if target.bot:
         return "Nemůžeš to použít na bota."
     if target.id == interaction.guild.owner_id:
         return "Nemůžeš to použít na vlastníka serveru."
+
+    # hierarchie uživatele
     if actor.id != interaction.guild.owner_id and actor.top_role <= target.top_role:
         return "Nemůžeš to použít na hráče se stejnou nebo vyšší rolí než máš ty."
-    # bot hierarchie
+
+    # hierarchie bota
     me = interaction.guild.me  # type: ignore
     if me and me.top_role <= target.top_role:
-        return "Bot je níž nebo stejně vysoko než cílový hráč, nemůžu mu měnit role / moderovat."
+        return "Bot je níž nebo stejně vysoko než cílový hráč, nemůžu ho moderovat."
+
     return None
 
 def role_editable(role: discord.Role) -> bool:
     return (not role.is_default()) and (not role.managed)
 
 def can_assign_role(actor: discord.Member, role: discord.Role) -> bool:
-    # aktér nesmí přidat/odebrat roli, která je stejně vysoko nebo výš než jeho top role (kromě ownera)
     if actor.id == actor.guild.owner_id:
         return True
     return actor.top_role > role
@@ -159,18 +171,14 @@ async def on_message(message: discord.Message):
     if exp is not None:
         now = time.time()
 
-        # expirovalo
         if now >= exp:
             TEMP_MUTES.pop(message.author.id, None)
         else:
-            # smaž zprávu
             try:
                 await message.delete()
             except Exception:
-                # nemá Manage Messages, nebo error
                 return
 
-            # varování max 1x za 5 sekund v kanálu
             key = (message.author.id, message.channel.id)
             last = LAST_WARN.get(key, 0)
             if now - last >= 5:
@@ -180,7 +188,6 @@ async def on_message(message: discord.Message):
                     f"{message.author.mention} ještě nemůžeš psát po dobu {format_time_left(left)}."
                 )
 
-    # pokud někdy přidáš prefix příkazy, nech to tu:
     await bot.process_commands(message)
 
 # =====================
@@ -225,7 +232,6 @@ async def promote(interaction: discord.Interaction, user: discord.Member, role: 
 
     msg = f"Hráč {user.mention} byl povýšen na rank {role.mention} adminem {actor.mention}."
     await send_to_logs(interaction.guild, msg)
-
     await interaction.followup.send("✅ Hotovo. Zapsáno do logu i historie.", ephemeral=True)
 
 
@@ -267,8 +273,38 @@ async def demote(interaction: discord.Interaction, user: discord.Member, role: d
 
     msg = f"Hráč {user.mention} byl degradován z ranku {role.mention} adminem {actor.mention}."
     await send_to_logs(interaction.guild, msg)
-
     await interaction.followup.send("✅ Hotovo. Zapsáno do logu i historie.", ephemeral=True)
+
+# =====================
+# WARN
+# =====================
+
+@bot.tree.command(name="warn", description="Varuje hráče.")
+@app_commands.describe(user="Koho varovat", reason="Důvod")
+async def warn_cmd(interaction: discord.Interaction, user: discord.Member, reason: str = "Bez důvodu"):
+    await interaction.response.defer(ephemeral=True)
+
+    if interaction.guild is None:
+        return await interaction.followup.send("Jen na serveru.", ephemeral=True)
+
+    actor = interaction.user
+    if not isinstance(actor, discord.Member):
+        return await interaction.followup.send("Nepodařilo se načíst tvoje role.", ephemeral=True)
+
+    if not has_permission(actor) and not actor.guild_permissions.moderate_members:
+        return await interaction.followup.send("Nemáš oprávnění na /warn.", ephemeral=True)
+
+    err = abuse_block(interaction, actor, user)
+    if err:
+        return await interaction.followup.send(err, ephemeral=True)
+
+    await interaction.channel.send(
+        f"⚠️ **BYL JSI VAROVÁN** {user.mention}\n"
+        f"**Důvod:** {reason}\n"
+        f"**Admin:** {actor.mention}"
+    )
+
+    await interaction.followup.send("✅ Warn poslán do chatu.", ephemeral=True)
 
 # =====================
 # MODERACE: kick / ban / tempban / mute / tempmute / unmute
@@ -360,7 +396,6 @@ async def tempban_cmd(interaction: discord.Interaction, user: discord.Member, mi
 
     await asyncio.sleep(minutes * 60)
 
-    # unban podle ID
     try:
         await interaction.guild.unban(discord.Object(id=user.id), reason="Tempban vypršel")
     except Exception:
@@ -413,7 +448,6 @@ async def tempmute_cmd(interaction: discord.Interaction, user: discord.Member, h
     if not isinstance(actor, discord.Member):
         return await interaction.followup.send("Nepodařilo se načíst tvoje role.", ephemeral=True)
 
-    # na tempmute musí umět mazat zprávy (nebo být MAJITEL/VELITEL)
     if not has_permission(actor) and not actor.guild_permissions.manage_messages:
         return await interaction.followup.send("Nemáš oprávnění na /tempmute.", ephemeral=True)
 
@@ -453,10 +487,8 @@ async def unmute_cmd(interaction: discord.Interaction, user: discord.Member):
     if not has_permission(actor) and not (actor.guild_permissions.moderate_members or actor.guild_permissions.manage_messages):
         return await interaction.followup.send("Nemáš oprávnění na /unmute.", ephemeral=True)
 
-    # zruš soft tempmute
     TEMP_MUTES.pop(user.id, None)
 
-    # zruš timeout
     try:
         await user.timeout(None, reason=f"Unmute by {actor} ({actor.id})")
     except Exception:
