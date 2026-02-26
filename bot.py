@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 # =====================
 # TOKEN
 # =====================
-TOKEN = "MTQ3NjY1NzQyNjQ5NjQ4NzUxNg.Gpw63k._LWGoAoKQE_xYta5yz9KbjS31D3fATiiMm6pAs"
+TOKEN = "MTQ3NjY1NzQyNjQ5NjQ4NzUxNg.GJGxAh.09fnzrcAikZka-ezjMxiSB8PGzz76aNrCGeSsM"
 
 # =====================
 # NASTAVENÍ
